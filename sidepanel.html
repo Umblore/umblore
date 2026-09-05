@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Umblore</title>
+<link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="wordmark">Umblore</div>
+    <p class="tagline">Claims you've found, with sources attached.</p>
+    <input type="text" id="search" class="search" placeholder="Search your claims" />
+    <div id="tagRow" class="tag-row"></div>
+  </header>
+
+  <main id="list" class="list"></main>
+
+  <div id="empty" class="empty" hidden>
+    <p>Nothing saved yet.</p>
+    <p>Highlight text on any page, right-click, and choose <strong>Save claim to Umblore</strong>. Use <strong>Save claim + page snapshot</strong> when you want an offline copy of the page too.</p>
+  </div>
+
+  <footer class="footer">
+    <span id="count" class="count"></span>
+    <div class="footer-actions">
+      <button id="exportMd" class="btn">Export as Markdown</button>
+      <button id="exportJson" class="btn btn-quiet">Export as JSON</button>
+    </div>
+  </footer>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
