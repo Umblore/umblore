@@ -12,7 +12,7 @@ Research and reporting both involve the same failure: you read something worth k
 
 ## The map
 
-Tag a claim with one or more topics and the map view draws them as a graph. Gold nodes are topics, dark nodes are claims, and a claim tagged with several topics sits between them as a bridge — which is the point. Instead of filing each quote into exactly one folder, you can see where your material actually overlaps.
+Tag a claim with one or more topics and the map view draws them as a graph. Purple nodes are topics, dark nodes are claims, and a claim tagged with several topics sits between them as a bridge — which is the point. Instead of filing each quote into exactly one folder, you can see where your material actually overlaps.
 
 ![Map view showing claims connected to topic nodes, with one claim selected](docs/screenshot-map.png)
 
