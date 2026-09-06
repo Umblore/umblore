@@ -25,7 +25,10 @@
   <main id="list" class="list"></main>
 
   <section id="mapView" class="map-view" hidden>
-    <canvas id="graph" class="graph"></canvas>
+    <div class="graph-wrap">
+      <canvas id="graph" class="graph"></canvas>
+      <button id="fitBtn" class="fit-btn" title="Fit the whole map in view">Fit</button>
+    </div>
     <div id="mapEmpty" class="map-empty" hidden>
       Add topics to your claims to see how they connect. Claims sharing a topic link together, and a claim with several topics bridges them.
     </div>

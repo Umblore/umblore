@@ -11,6 +11,7 @@ const viewListBtn = document.getElementById("viewList");
 const viewMapBtn = document.getElementById("viewMap");
 const themeBtn = document.getElementById("themeBtn");
 const openTabBtn = document.getElementById("openTab");
+const fitBtn = document.getElementById("fitBtn");
 const isFullPage = document.body.dataset.fullpage === "1";
 
 let claims = [];
@@ -325,6 +326,10 @@ function readThemeColors() {
 
 let nodes = [];
 let edges = [];
+// camera over the graph: k is zoom, x/y is the pan offset in screen pixels
+let cam = { x: 0, y: 0, k: 1 };
+let panFrom = null;
+let needsFit = true;
 let selectedId = null;
 let animFrame = null;
 let dragNode = null;
@@ -379,14 +384,28 @@ function buildGraph() {
   });
 }
 
-function tick() {
+// The layout runs in its own coordinate space, sized to the number of
+// nodes rather than to the viewport, so a big graph simply gets a bigger
+// world and you pan around it instead of everything being crushed together.
+function worldSize() {
   const w = canvas.clientWidth || 360;
   const h = canvas.clientHeight || 380;
+  const span = Math.sqrt(Math.max(nodes.length, 1)) * 115;
+  return { w: Math.max(w, span), h: Math.max(h, span) };
+}
+
+function tick() {
+  const world = worldSize();
+  const w = world.w;
+  const h = world.h;
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  // a wider canvas should breathe, not clump in the middle
-  const scale = Math.max(1, Math.min(Math.sqrt((w * h) / (360 * 380)), 2.6));
-  const repulsion = 900 * scale * scale;
-  const restLength = 58 * scale;
+  // Fruchterman-Reingold style constants: k is the ideal distance between
+  // nodes for this many nodes in this much space, so the layout stays sane
+  // whether there are 10 claims or 500.
+  const k = Math.sqrt((w * h) / Math.max(nodes.length, 1));
+  const repulsion = k * k;
+  const restLength = k;
+  const maxSpeed = k * 0.22;
 
   // repulsion
   for (let i = 0; i < nodes.length; i++) {
@@ -431,10 +450,15 @@ function tick() {
 
   // gentle pull to centre + integrate
   nodes.forEach((n) => {
-    n.vx += (w / 2 - n.x) * 0.0016;
-    n.vy += (h / 2 - n.y) * 0.0016;
+    n.vx += (w / 2 - n.x) * 0.0022;
+    n.vy += (h / 2 - n.y) * 0.0022;
     n.vx *= 0.86;
     n.vy *= 0.86;
+    const speed = Math.hypot(n.vx, n.vy);
+    if (speed > maxSpeed) {
+      n.vx = (n.vx / speed) * maxSpeed;
+      n.vy = (n.vy / speed) * maxSpeed;
+    }
     if (n !== dragNode) {
       n.x += n.vx;
       n.y += n.vy;
@@ -461,6 +485,11 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
+  // Nodes and labels are drawn at a constant screen size; zooming changes
+  // how far apart things are, not how big they are, so a claim stays
+  // clickable and readable however far out you zoom.
+  const sx = (n) => n.x * cam.k + cam.x;
+  const sy = (n) => n.y * cam.k + cam.y;
   const byId = new Map(nodes.map((n) => [n.id, n]));
 
   ctx.strokeStyle = COLORS.line;
@@ -470,15 +499,15 @@ function draw() {
     const b = byId.get(e.b);
     if (!a || !b) return;
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
+    ctx.moveTo(sx(a), sy(a));
+    ctx.lineTo(sx(b), sy(b));
     ctx.stroke();
   });
 
   nodes.forEach((n) => {
     const isSelected = n.id === selectedId;
     ctx.beginPath();
-    ctx.arc(n.x, n.y, isSelected ? n.r + 2 : n.r, 0, Math.PI * 2);
+    ctx.arc(sx(n), sy(n), isSelected ? n.r + 2 : n.r, 0, Math.PI * 2);
     if (n.kind === "tag") {
       ctx.fillStyle = COLORS.nodeTag;
       ctx.fill();
@@ -491,22 +520,31 @@ function draw() {
     }
   });
 
-  ctx.fillStyle = COLORS.ink;
   ctx.font = "600 11px -apple-system, 'Segoe UI', sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   nodes.forEach((n) => {
     if (n.kind !== "tag") return;
+    const x = sx(n);
+    const y = sy(n);
+    if (x < -60 || y < -20 || x > w + 60 || y > h + 20) return; // offscreen
     const tw = ctx.measureText(n.label).width;
     ctx.fillStyle = COLORS.paper;
-    ctx.fillRect(n.x - tw / 2 - 3, n.y + n.r + 2, tw + 6, 14);
+    ctx.fillRect(x - tw / 2 - 3, y + n.r + 2, tw + 6, 14);
     ctx.fillStyle = COLORS.ink;
-    ctx.fillText(n.label, n.x, n.y + n.r + 4);
+    ctx.fillText(n.label, x, y + n.r + 4);
   });
 }
 
+let settleTicks = 0;
+
 function animate() {
   tick();
+  // let the layout relax, then frame it once
+  if (needsFit && ++settleTicks > 90) {
+    fitToContent();
+    needsFit = false;
+  }
   draw();
   animFrame = requestAnimationFrame(animate);
 }
@@ -523,13 +561,21 @@ function stopAnimation() {
 }
 
 function nodeAt(px, py) {
+  // nodes are drawn at constant screen size, so compare in screen space
+  let best = null;
+  let bestD = Infinity;
   for (let i = nodes.length - 1; i >= 0; i--) {
     const n = nodes[i];
-    const dx = px - n.x;
-    const dy = py - n.y;
-    if (dx * dx + dy * dy <= (n.r + 7) * (n.r + 7)) return n;
+    const dx = px - (n.x * cam.k + cam.x);
+    const dy = py - (n.y * cam.k + cam.y);
+    const d2 = dx * dx + dy * dy;
+    const reach = n.r + 7;
+    if (d2 <= reach * reach && d2 < bestD) {
+      best = n;
+      bestD = d2;
+    }
   }
-  return null;
+  return best;
 }
 
 function pointerPos(evt) {
@@ -537,11 +583,41 @@ function pointerPos(evt) {
   return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
 }
 
+// screen pixels -> graph coordinates
+function toWorld(px, py) {
+  return { x: (px - cam.x) / cam.k, y: (py - cam.y) / cam.k };
+}
+
+// Frame the whole graph in the viewport.
+function fitToContent() {
+  if (!nodes.length) return;
+  const w = canvas.clientWidth || 360;
+  const h = canvas.clientHeight || 380;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodes.forEach((n) => {
+    minX = Math.min(minX, n.x);
+    maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y);
+    maxY = Math.max(maxY, n.y);
+  });
+  const margin = 46; // screen px kept clear for labels at the edges
+  const gw = Math.max(maxX - minX, 1);
+  const gh = Math.max(maxY - minY, 1);
+  cam.k = Math.max(
+    0.05,
+    Math.min(Math.min((w - margin * 2) / gw, (h - margin * 2) / gh), 1.6)
+  );
+  cam.x = w / 2 - ((minX + maxX) / 2) * cam.k;
+  cam.y = h / 2 - ((minY + maxY) / 2) * cam.k;
+}
+
 canvas.addEventListener("pointerdown", (evt) => {
   const { x, y } = pointerPos(evt);
   const n = nodeAt(x, y);
   if (!n) {
     selectedId = null;
+    panFrom = { x: evt.clientX, y: evt.clientY, camX: cam.x, camY: cam.y };
+    canvas.setPointerCapture(evt.pointerId);
     renderNodeDetail();
     return;
   }
@@ -559,17 +635,59 @@ canvas.addEventListener("pointerdown", (evt) => {
 });
 
 canvas.addEventListener("pointermove", (evt) => {
+  if (panFrom) {
+    cam.x = panFrom.camX + (evt.clientX - panFrom.x);
+    cam.y = panFrom.camY + (evt.clientY - panFrom.y);
+    return;
+  }
   if (!dragNode) return;
   const { x, y } = pointerPos(evt);
-  dragNode.x = x;
-  dragNode.y = y;
+  const p = toWorld(x, y);
+  dragNode.x = p.x;
+  dragNode.y = p.y;
   dragNode.vx = 0;
   dragNode.vy = 0;
 });
 
 canvas.addEventListener("pointerup", () => {
   dragNode = null;
+  panFrom = null;
 });
+
+canvas.addEventListener("pointercancel", () => {
+  dragNode = null;
+  panFrom = null;
+});
+
+fitBtn.addEventListener("click", () => fitToContent());
+
+// The canvas changes height when the detail panel opens or the window
+// resizes. Shift the camera by half the delta so whatever you were
+// looking at stays put instead of sliding out of frame.
+let lastCanvasSize = null;
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (!w || !h) return;
+    if (lastCanvasSize) {
+      cam.x += (w - lastCanvasSize.w) / 2;
+      cam.y += (h - lastCanvasSize.h) / 2;
+    }
+    lastCanvasSize = { w, h };
+  }).observe(canvas);
+}
+
+// Scroll to zoom, keeping the point under the cursor fixed.
+canvas.addEventListener("wheel", (evt) => {
+  evt.preventDefault();
+  const { x, y } = pointerPos(evt);
+  const before = toWorld(x, y);
+  const factor = Math.exp(-evt.deltaY * 0.0015);
+  cam.k = Math.max(0.1, Math.min(cam.k * factor, 4));
+  cam.x = x - before.x * cam.k;
+  cam.y = y - before.y * cam.k;
+}, { passive: false });
 
 function renderNodeDetail() {
   const node = nodes.find((n) => n.id === selectedId);
@@ -692,6 +810,8 @@ function render() {
     mapEmptyEl.hidden = anyTags;
     if (anyTags) {
       buildGraph();
+      needsFit = true;
+      settleTicks = 0;
       if (!nodes.some((n) => n.id === selectedId)) selectedId = null;
       renderNodeDetail();
       startAnimation();

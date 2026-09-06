@@ -12,11 +12,11 @@ Research and reporting both involve the same failure: you read something worth k
 
 ## The map
 
-Tag a claim with one or more topics and the map view draws them as a graph. Purple nodes are topics, dark nodes are claims, and a claim tagged with several topics sits between them as a bridge — which is the point. Instead of filing each quote into exactly one folder, you can see where your material actually overlaps.
+Tag a claim with one or more topics and the map view draws them as a graph. Gold nodes are topics, dark nodes are claims, and a claim tagged with several topics sits between them as a bridge — which is the point. Instead of filing each quote into exactly one folder, you can see where your material actually overlaps.
 
 ![Map view showing claims connected to topic nodes, with one claim selected](docs/screenshot-map.png)
 
-Click a claim to see it in full with its source — it turns green so you can see which one you're reading. Click a topic to filter everything down to it. Drag nodes around if the layout tangles.
+Click a claim to see it in full with its source — it turns green so you can see which one you're reading. Click a topic to filter everything down to it. Drag a node to move it, drag empty space to pan, scroll to zoom, and press **Fit** to frame everything again. Nodes and labels stay the same size at any zoom, so a claim is still clickable when you're zoomed right out.
 
 Once you have a few dozen claims the map outgrows a side panel, so there's a button in the header that opens it in a full browser tab. Capture in the panel while you read, review in the tab when you sit down to write.
 
