@@ -325,10 +325,12 @@ function readThemeColors() {
 }
 
 let nodes = [];
+let energy = Infinity;
 let edges = [];
 // camera over the graph: k is zoom, x/y is the pan offset in screen pixels
 let cam = { x: 0, y: 0, k: 1 };
 let panFrom = null;
+let didDrag = false;
 let needsFit = true;
 let selectedId = null;
 let animFrame = null;
@@ -380,6 +382,8 @@ function buildGraph() {
     });
     tagsOf(claim).forEach((t) => {
       edges.push({ a: "claim:" + claim.id, b: "tag:" + t });
+      const hub = nodes.find((n) => n.id === "tag:" + t);
+      if (hub) hub.degree = (hub.degree || 0) + 1;
     });
   });
 }
@@ -387,11 +391,12 @@ function buildGraph() {
 // The layout runs in its own coordinate space, sized to the number of
 // nodes rather than to the viewport, so a big graph simply gets a bigger
 // world and you pan around it instead of everything being crushed together.
+// Deliberately independent of the canvas: if the world depended on the
+// viewport, opening the detail panel would resize the canvas, change the
+// layout, and shuffle every node on screen.
 function worldSize() {
-  const w = canvas.clientWidth || 360;
-  const h = canvas.clientHeight || 380;
   const span = Math.sqrt(Math.max(nodes.length, 1)) * 115;
-  return { w: Math.max(w, span), h: Math.max(h, span) };
+  return { w: Math.max(560, span), h: Math.max(560, span) };
 }
 
 function tick() {
@@ -449,6 +454,7 @@ function tick() {
   });
 
   // gentle pull to centre + integrate
+  energy = 0;
   nodes.forEach((n) => {
     n.vx += (w / 2 - n.x) * 0.0022;
     n.vy += (h / 2 - n.y) * 0.0022;
@@ -463,6 +469,7 @@ function tick() {
       n.x += n.vx;
       n.y += n.vy;
     }
+    energy += n.vx * n.vx + n.vy * n.vy;
     // tag labels sit below and extend either side of the node, so the
     // clamp has to account for the text box, not just the circle
     const pad = n.r + 4;
@@ -523,34 +530,67 @@ function draw() {
   ctx.font = "600 11px -apple-system, 'Segoe UI', sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  nodes.forEach((n) => {
-    if (n.kind !== "tag") return;
-    const x = sx(n);
-    const y = sy(n);
-    if (x < -60 || y < -20 || x > w + 60 || y > h + 20) return; // offscreen
-    const tw = ctx.measureText(n.label).width;
-    ctx.fillStyle = COLORS.paper;
-    ctx.fillRect(x - tw / 2 - 3, y + n.r + 2, tw + 6, 14);
-    ctx.fillStyle = COLORS.ink;
-    ctx.fillText(n.label, x, y + n.r + 4);
-  });
+
+  // Draw the busiest topics first and skip any label that would collide
+  // with one already placed, so a crowded map stays readable. Zooming in
+  // spreads the nodes out and the skipped labels reappear.
+  const placed = [];
+  const overlaps = (b) =>
+    placed.some(
+      (p) => b.x < p.x + p.w && b.x + b.w > p.x && b.y < p.y + p.h && b.y + b.h > p.y
+    );
+
+  nodes
+    .filter((n) => n.kind === "tag")
+    .sort((a, b) => (b.degree || 0) - (a.degree || 0))
+    .forEach((n) => {
+      const x = sx(n);
+      const y = sy(n);
+      if (x < -60 || y < -20 || x > w + 60 || y > h + 20) return; // offscreen
+      const tw = ctx.measureText(n.label).width;
+      const box = { x: x - tw / 2 - 3, y: y + n.r + 2, w: tw + 6, h: 14 };
+      if (overlaps(box)) return;
+      placed.push(box);
+      ctx.fillStyle = COLORS.paper;
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+      ctx.fillStyle = COLORS.ink;
+      ctx.fillText(n.label, x, y + n.r + 4);
+    });
 }
 
-let settleTicks = 0;
+// Run the layout to completion off-screen so the graph appears already
+// arranged, instead of visibly flailing and then snapping into place.
+function settle(steps) {
+  for (let i = 0; i < steps; i++) {
+    tick();
+    if (energy / Math.max(nodes.length, 1) < 0.05) break;
+  }
+  freeze();
+}
+
+// Park the layout: no residual velocity means no slow drift while you read.
+function freeze() {
+  nodes.forEach((n) => {
+    n.vx = 0;
+    n.vy = 0;
+  });
+  energy = 0;
+}
 
 function animate() {
   tick();
-  // let the layout relax, then frame it once
-  if (needsFit && ++settleTicks > 90) {
-    fitToContent();
-    needsFit = false;
-  }
   draw();
+  // only runs while a node is being dragged; pointerup stops it
+  if (!dragNode) {
+    animFrame = null;
+    return;
+  }
   animFrame = requestAnimationFrame(animate);
 }
 
+// Nudge the physics back into motion (after a drag, a filter change, etc.)
 function startAnimation() {
-  if (animFrame === null) animate();
+  if (animFrame === null) animFrame = requestAnimationFrame(animate);
 }
 
 function stopAnimation() {
@@ -631,6 +671,7 @@ canvas.addEventListener("pointerdown", (evt) => {
     return;
   }
   dragNode = n;
+  didDrag = false;
   canvas.setPointerCapture(evt.pointerId);
 });
 
@@ -638,6 +679,7 @@ canvas.addEventListener("pointermove", (evt) => {
   if (panFrom) {
     cam.x = panFrom.camX + (evt.clientX - panFrom.x);
     cam.y = panFrom.camY + (evt.clientY - panFrom.y);
+    draw();
     return;
   }
   if (!dragNode) return;
@@ -647,32 +689,54 @@ canvas.addEventListener("pointermove", (evt) => {
   dragNode.y = p.y;
   dragNode.vx = 0;
   dragNode.vy = 0;
+  didDrag = true;
+  startAnimation();
 });
 
 canvas.addEventListener("pointerup", () => {
+  const wasDragging = dragNode && didDrag;
   dragNode = null;
   panFrom = null;
+  didDrag = false;
+  stopAnimation();
+  if (wasDragging) {
+    // let neighbours relax around the moved node, then settle again
+    settle(120);
+  }
+  draw();
 });
 
 canvas.addEventListener("pointercancel", () => {
   dragNode = null;
   panFrom = null;
+  didDrag = false;
+  stopAnimation();
+  freeze();
+  draw();
 });
 
-fitBtn.addEventListener("click", () => fitToContent());
+fitBtn.addEventListener("click", () => {
+  fitToContent();
+  draw();
+});
 
 // The canvas changes height when the detail panel opens or the window
 // resizes. Shift the camera by half the delta so whatever you were
 // looking at stays put instead of sliding out of frame.
+// The canvas changes size when the detail panel opens or the window is
+// resized. The layout itself is unaffected (the world is independent of the
+// canvas), so only the camera needs adjusting: shift by half the delta to
+// keep the same point centred rather than cropping the graph.
 let lastCanvasSize = null;
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => {
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
     if (!w || !h) return;
-    if (lastCanvasSize) {
+    if (lastCanvasSize && view === "map") {
       cam.x += (w - lastCanvasSize.w) / 2;
       cam.y += (h - lastCanvasSize.h) / 2;
+      draw();
     }
     lastCanvasSize = { w, h };
   }).observe(canvas);
@@ -687,6 +751,7 @@ canvas.addEventListener("wheel", (evt) => {
   cam.k = Math.max(0.1, Math.min(cam.k * factor, 4));
   cam.x = x - before.x * cam.k;
   cam.y = y - before.y * cam.k;
+  draw();
 }, { passive: false });
 
 function renderNodeDetail() {
@@ -810,11 +875,11 @@ function render() {
     mapEmptyEl.hidden = anyTags;
     if (anyTags) {
       buildGraph();
-      needsFit = true;
-      settleTicks = 0;
+      settle(400);
+      fitToContent();
       if (!nodes.some((n) => n.id === selectedId)) selectedId = null;
       renderNodeDetail();
-      startAnimation();
+      draw();
     } else {
       stopAnimation();
       nodeDetailEl.hidden = true;
