@@ -391,12 +391,24 @@ function buildGraph() {
 // The layout runs in its own coordinate space, sized to the number of
 // nodes rather than to the viewport, so a big graph simply gets a bigger
 // world and you pan around it instead of everything being crushed together.
-// Deliberately independent of the canvas: if the world depended on the
-// viewport, opening the detail panel would resize the canvas, change the
-// layout, and shuffle every node on screen.
+// The world takes the shape of the window so a wide screen gets a wide
+// layout instead of a square blob with dead space either side. It is
+// measured once when the graph is built and then frozen: if it tracked the
+// canvas live, opening the detail panel would re-solve the layout and
+// shuffle every node.
+let world = { w: 560, h: 560 };
+
+function measureWorld() {
+  const cw = canvas.clientWidth || 360;
+  const ch = canvas.clientHeight || 380;
+  const aspect = Math.max(0.4, Math.min(cw / Math.max(ch, 1), 2.6));
+  const area = Math.max(nodes.length, 1) * 115 * 115;
+  const h = Math.sqrt(area / aspect);
+  world = { w: Math.max(420, h * aspect), h: Math.max(420, h) };
+}
+
 function worldSize() {
-  const span = Math.sqrt(Math.max(nodes.length, 1)) * 115;
-  return { w: Math.max(560, span), h: Math.max(560, span) };
+  return world;
 }
 
 function tick() {
@@ -411,6 +423,11 @@ function tick() {
   const repulsion = k * k;
   const restLength = k;
   const maxSpeed = k * 0.22;
+  // Centring pull scaled per axis: a wide world pulls less horizontally, so
+  // the layout settles into the window's shape rather than a circle.
+  const geo = Math.sqrt(w * h);
+  const centreX = 0.0022 * (geo / w);
+  const centreY = 0.0022 * (geo / h);
 
   // repulsion
   for (let i = 0; i < nodes.length; i++) {
@@ -456,8 +473,8 @@ function tick() {
   // gentle pull to centre + integrate
   energy = 0;
   nodes.forEach((n) => {
-    n.vx += (w / 2 - n.x) * 0.0022;
-    n.vy += (h / 2 - n.y) * 0.0022;
+    n.vx += (w / 2 - n.x) * centreX;
+    n.vy += (h / 2 - n.y) * centreY;
     n.vx *= 0.86;
     n.vy *= 0.86;
     const speed = Math.hypot(n.vx, n.vy);
@@ -470,13 +487,10 @@ function tick() {
       n.y += n.vy;
     }
     energy += n.vx * n.vx + n.vy * n.vy;
-    // tag labels sit below and extend either side of the node, so the
-    // clamp has to account for the text box, not just the circle
-    const pad = n.r + 4;
-    const padX = n.kind === "tag" ? Math.max(pad, n.halfLabel || pad) : pad;
-    const padBottom = n.kind === "tag" ? n.r + 20 : pad;
-    n.x = Math.max(padX, Math.min(w - padX, n.x));
-    n.y = Math.max(pad, Math.min(h - padBottom, n.y));
+    // No hard boundary. Nodes used to be clamped to the world rect, which
+    // read as an invisible wall when dragging. The centring force is what
+    // keeps the graph from wandering off, and you can pan and zoom to
+    // follow anything you drag out to the edge.
   });
 }
 
@@ -577,6 +591,39 @@ function freeze() {
   energy = 0;
 }
 
+// After settling, gently stretch the layout to the proportions of the
+// window. A force layout relaxes into a roughly round blob whatever shape
+// the world is, which leaves dead space in a wide window; this makes the
+// graph actually use the canvas. Capped so it never looks squashed.
+function spreadToAspect() {
+  if (nodes.length < 3) return;
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  if (!cw || !ch) return;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodes.forEach((n) => {
+    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+  });
+  const gw = maxX - minX;
+  const gh = maxY - minY;
+  if (gw <= 1 || gh <= 1) return;
+
+  const target = cw / ch;
+  const current = gw / gh;
+  let sx = 1, sy = 1;
+  if (current < target) sx = Math.min(target / current, 1.7);
+  else sy = Math.min(current / target, 1.7);
+
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+  nodes.forEach((n) => {
+    n.x = midX + (n.x - midX) * sx;
+    n.y = midY + (n.y - midY) * sy;
+  });
+}
+
 function animate() {
   tick();
   draw();
@@ -645,7 +692,7 @@ function fitToContent() {
   const gh = Math.max(maxY - minY, 1);
   cam.k = Math.max(
     0.05,
-    Math.min(Math.min((w - margin * 2) / gw, (h - margin * 2) / gh), 1.6)
+    Math.min(Math.min((w - margin * 2) / gw, (h - margin * 2) / gh), 2.6)
   );
   cam.x = w / 2 - ((minX + maxX) / 2) * cam.k;
   cam.y = h / 2 - ((minY + maxY) / 2) * cam.k;
@@ -875,7 +922,9 @@ function render() {
     mapEmptyEl.hidden = anyTags;
     if (anyTags) {
       buildGraph();
+      measureWorld();
       settle(400);
+      spreadToAspect();
       fitToContent();
       if (!nodes.some((n) => n.id === selectedId)) selectedId = null;
       renderNodeDetail();
